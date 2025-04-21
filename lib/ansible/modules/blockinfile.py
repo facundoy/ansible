@@ -102,6 +102,12 @@ options:
     type: bool
     default: no
     version_added: '2.16'
+  encoding:
+    description:
+      - The character encoding for reading and writing the file.
+    type: str
+    default: utf-8
+    version_added: '2.19'
 notes:
   - When using C(with_*) loops be aware that if you do not set a unique mark the block will be overwritten on each iteration.
   - As of Ansible 2.3, the O(dest) option has been changed to O(path) as default, but O(dest) still works as well.
@@ -194,13 +200,19 @@ import os
 import tempfile
 from ansible.module_utils.six import b
 from ansible.module_utils.basic import AnsibleModule
-from ansible.module_utils.common.text.converters import to_bytes, to_native
+from ansible.module_utils.common.text.converters import to_bytes, to_native, to_text
 
 
 def write_changes(module, contents, path):
 
     tmpfd, tmpfile = tempfile.mkstemp(dir=module.tmpdir)
     with os.fdopen(tmpfd, 'wb') as tf:
+        if module.params['encoding'] != 'utf-8':
+            try:
+                contents = to_text(contents, encoding='utf-8', errors='surrogate_or_strict')
+                contents = to_bytes(contents, encoding=module.params['encoding'], errors='surrogate_or_strict')
+            except UnicodeError as e:
+                module.fail_json(msg="Failed to encode file with encoding %s: %s" % (module.params['encoding'], to_native(e)))
         tf.write(contents)
 
     validate = module.params.get('validate', None)
@@ -246,6 +258,7 @@ def main():
             marker_end=dict(type='str', default='END'),
             append_newline=dict(type='bool', default=False),
             prepend_newline=dict(type='bool', default=False),
+            encoding=dict(type='str', default='utf-8'),
         ),
         mutually_exclusive=[['insertbefore', 'insertafter']],
         add_file_common_args=True,
@@ -274,9 +287,16 @@ def main():
         original = None
         lines = []
     else:
-        with open(path, 'rb') as f:
-            original = f.read()
-        lines = original.splitlines(True)
+        try:
+            with open(path, 'rb') as f:
+                original = f.read()
+            if params['encoding'] != 'utf-8':
+                original = to_text(original, encoding=params['encoding'], errors='surrogate_or_strict')
+                lines = [to_bytes(line, encoding=params['encoding']) for line in original.splitlines(True)]
+            else:
+                lines = original.splitlines(True)
+        except (IOError, UnicodeError) as e:
+            module.fail_json(msg="Unable to read file %s with encoding %s: %s" % (path, params['encoding'], to_native(e)))
 
     diff = {'before': '',
             'after': '',
